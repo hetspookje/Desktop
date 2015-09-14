@@ -1,0 +1,341 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import cv2
+import matplotlib.patches as mpatches
+from skimage.filters import threshold_otsu
+from skimage.measure import label
+from skimage.morphology import closing, square
+from skimage.measure import regionprops
+from skimage import io
+from skimage.transform import rotate, rescale
+import networkx as nx
+from skimage.restoration import denoise_bilateral
+from skimage.segmentation import clear_border
+from pytesseract import image_to_string
+from PIL import Image
+
+Filename = "ImagewithLicensePlate.jpg"
+image = io.imread(Filename, True)
+#overwogen door middels een horizontale projectie een band uit te knippen en daar ook een ROI uit te knippen om een waarschijnlijke ROI te maken.
+#Echter duurde dit te lang.
+#een deel van het plaatje wordt weggesneden, aangenomen dat kentekens zeer zelden in de randen van het plaatje zitten.
+image = image[int(len(image[:,0])/20): len(image[:,0])-int(len(image[:,0])/20), int(len(image[0,:])/20):(len(image[0,:])- int(len(image[0,:])/20))]
+
+#Enlarges the rectangle drawn around a letter to prevent losses of small edges.
+def cor(XY):
+    height, width = [], []
+    for i in range(len(XY)):
+        height.append((XY[i][3]-XY[i][2])**0.4)
+        width.append((XY[i][3] - XY[i][2])**0.4)
+        XY[i][0] = int(XY[i][0]-height[i])
+        XY[i][1] = int(XY[i][1]+height[i])
+        XY[i][2] = int(XY[i][2]-width[i])
+        XY[i][3] = int(XY[i][3]+width[i])
+    return XY
+    
+#Cuts of percentage of all 4 sides to ensmall te picture so that the threshold shifts and it perhaps finds the licenseplate.
+def procent(image, bpercent, hpercent):
+    hoogte = len(image[:,0])
+    breedte = len(image[0,:])
+    image = image[int(hoogte*hpercent):int(hoogte*(1-hpercent)), int(breedte*bpercent):int(breedte*(1-bpercent))]
+    return image
+
+    
+#Kijken of er staande rechthoeken binnen een groep vallen.
+#Dit dmv te kijken of ze in het verlengde liggen van hun eigen lengte
+def mid(coords):
+    y0,y1,x0,x1 = coords[0],coords[1],coords[2],coords[3]
+    yb, xb = (y1+y0)/2, (x1+x0)/2 
+    return [int(yb), int(xb)]
+
+def subgraaf(matrix, index):
+    staandIndex,cent = [], []
+    G = (nx.to_networkx_graph(matrix.astype(int),create_using=nx.DiGraph()))
+    G = nx.DiGraph.to_undirected(G)
+    #nx.draw(G)
+    for i in nx.node_connected_component(G, index):
+        staandIndex.append(i)
+    return staandIndex
+
+#Corrigeert het patje met de berekende hoek
+
+def Skew(image, hoek):
+    #XB = len(image[:,0])
+    #YB = len(image[0,:])
+    #kernel = np.zeros((3,3))
+    #for i in range(3):
+        #kernel[i,i] = 1
+    #kernel[1,0] = np.tan(hoek)
+    #dst = cv2.warpPerspective(image,kernel,(int((YB*(1-abs(np.tan(hoek))))),int(XB*(1-abs(np.tan(hoek))))),0,0,0,0)
+    return image
+
+
+                
+        
+def Groep(staand):
+    lengte = len(staand)
+    gevonden, cent = [], []
+
+    label = np.zeros((lengte, lengte))
+    teller = np.zeros(lengte)
+    for i in range(lengte):
+        for j in range(lengte):
+            if i != j:
+                #hoogteverschil filter
+                if staand[i][1][1]+ staand[i][3]*0.7 >= staand[j][1][1] >= staand[i][1][0]- staand[i][3]*0.7:#  or staand[i][1][0]- staand[i][3] <= staand[j][1][0] <= staand[i][1][1]:
+                    #breedtefilter
+                    if (staand[i][1][3] + staand[i][4]*2) >= staand[j][1][2] >= (staand[i][1][3]-staand[i][4]*2) or (staand[i][1][3] + staand[i][4]*2) >= staand[j][1][3] >= (staand[i][1][3]-staand[i][4]*2):
+                        teller[i] += 1
+                        #Hier wordt een N*N array ingevuld voor elke aansluiting
+                        label[i,j] = 1
+                        #Als er een rechthoek in een rechthoek zit dan wordt die eruit gefilterd.
+                        if ( staand[i][1][0] >  staand[j][1][0] and  staand[i][1][1] <  staand[j][1][1] and  staand[i][1][2] >  staand[j][1][2] and  staand[i][1][3] <  staand[j][1][3]):
+                            teller[i] = teller[i] - 1
+    #De rechthoek met de meeste verbindingen wordt gekozen als beginpunt in de graaf.
+    if len(teller) > 0: 
+        tellerMax = max(teller)
+        for i in range(lengte):
+            if teller[i] == tellerMax:
+                indexMaxtel = i
+        Candices = subgraaf(label, indexMaxtel)
+        cent = []
+        for i in Candices:            
+            if teller[i] > 0:
+                cent.append(mid(staand[i][1]))
+                gevonden.append(i)
+    else:
+        print "niks gevonden"
+        gevonden = []
+    
+    #print len(sorted(set(gevonden))), len(cent)
+    return sorted(set(gevonden)), cent
+
+def Lijnzoek(midcoords):
+    n = len(midcoords)
+    afstandarray = np.zeros((n,n))
+    hoekarray = np.zeros((n,n))
+    lijnarray = np.zeros((n,n))
+    #Berekend de hoek naar het volgende punt.
+    for i in range(len(midcoords)):
+        for j in range(i+1):
+            A = (midcoords[i][0] - midcoords[j][0])
+            B = (midcoords[i][1] - midcoords[j][1])
+            afstandarray[i,j] = ((A**2 + B**2)**0.5)
+            if B != 0 and A != 0:
+                lijnarray[i,j] = A/float(B)   
+                hoekarray[i,j] =  np.rad2deg(np.arctan(B/A ))
+    return lijnarray, hoekarray, afstandarray
+
+    
+def AfstandOnder(coef, XY, startXY):
+    lengte = len(XY)
+    Rechtonder = np.zeros(lengte)
+    Loodrecht = np.zeros(lengte)
+    b = np.zeros((len(XY),2))
+    for i in range(len(XY)):
+        b[i,0] = -XY[i][0]
+        b[i,1] = XY[i][1]
+    XY = b
+    #startXY[0] = startXY[0]*(-1)
+    for i in range(lengte):
+        y = coef*(XY[i, 1] - startXY[1]) - startXY[0]
+        Rechtonder[i] = XY[i,0] - y
+        Loodrecht[i] = np.cos(coef) * Rechtonder[i]
+    
+    return Loodrecht, coef
+
+
+def MaxAfstand(afstand):
+    lengte = len(afstand)
+    Maxrow = np.zeros(lengte)
+    for i in range (lengte):
+        Maxrow[i] = max(afstand[i,:])
+    Max = max(Maxrow)
+    for i in range(lengte):
+        for j in range(lengte):
+            if Max == afstand[i,j]:
+                afstand[i,j] = 0
+                coords = [i,j]
+    return Max, coords
+
+#MEET DE AFSTAND TUSSEN DE LETTERS  
+def interafstand(XY, letters):
+    popt = False
+    XYdic, lengte, teller  = {}, len(letters), 0
+    for i in letters:
+        XYdic[i] = XY[teller]
+        teller += 1
+    XYdic = sorted(XYdic.items(), key=lambda x: x[1][1])
+    Streep, Letter, interdist = 0, 0, np.zeros(len(letters)-1)
+    for i in range(lengte-1):
+        interdist[i] = (((XYdic[i][1][0]-XYdic[i+1][1][0])**2)+((XYdic[i][1][1]-XYdic[i+1][1][1])**2))**0.5
+    intermed = np.median(interdist)
+    for i in range(lengte-1):
+        if abs(interdist[i] - intermed) > intermed:
+            letters[i] = 0
+            popt = True
+    if popt == True:
+        letters = sorted(set(letters))[1:]
+    return letters
+
+#Check nogmaals of er geen vierkanten in vierkanten zitten
+def sqinsq(letters):
+    coords, pop, lengte = [], False, len(letters)
+    for i in letters:
+        coords.append(staand[i][1])
+    for i in range(lengte):
+        for j in range(lengte):
+            if coords[i][0] > coords[j][0] and coords[i][1] < coords[j][1] and coords[i][2] > coords[j][2] and coords[i][3] < coords[j][3]:
+                pop =  True
+                letters[i] = 0
+    if pop == True: 
+        letters = sorted(set(letters))[1:]
+    return letters    
+
+def Lijn(lijn, hoek, afstand, XY, letters):
+    Hoofdteller, popt = 0, False
+    while Hoofdteller < 1:
+        letterteller = 0
+        Hoofdteller += 1
+        Max, coords = MaxAfstand(afstand)
+        A = -lijn[coords[0], coords[1]]
+        Sperp, coef =  AfstandOnder(A, XY, XY[coords[0]])
+        for i in range(len(Sperp)):
+            if abs(Sperp[i]) < 5:
+                letterteller += 1
+            else:
+                popt = True
+                letters[i] = 0
+        if letterteller > 5:           
+            break
+    if popt == True:
+        letters = sorted(set(letters))[1:]
+    letters = interafstand(XY, letters)
+    letters = sqinsq(letters)
+    return set(letters), coef
+
+def concatenate(imgs,breedte):
+    kenteken = np.zeros((breedte*0.7, breedte*1.8, 3))
+    width = [int(breedte*0.3)]
+    for i in range(len(imgs)):
+        width.append(len(imgs[i][0,:]))
+        for x in range(sum(width[0:i+1]), sum(width[0:i+2])):
+            for y in range(int(breedte*0.2), len(imgs[i][:,0])+int(breedte*0.2)):
+                kenteken[y,x][0] = imgs[i][int(y-breedte*0.2), x-sum(width[0:i+1])-1]
+    return kenteken
+
+def tesserfix(img, boolean):
+    char = np.ones((len(img[:,0]), len(img[0,:]), 3))
+    char = char*255
+    for l in range(len(img[:,0])):
+        for k in range(len(img[0,:])):
+            if boolean == True:
+                if img[l,k][0] == 0:
+                    char[l,k][0] = 255.0
+                    char[l,k][1] = 255.0
+                    char[l,k][2] = 255.0
+                else:
+                    char[l,k][0] = 0.0
+                    char[l,k][1] = 0.0
+                    char[l,k][2] = 0.0
+            else:
+                if img[l,k] == 0:
+                    char[l,k][0] = 255.0
+                    char[l,k][1] = 255.0
+                    char[l,k][2] = 255.0
+                else:
+                    char[l,k][0] = 0.0
+                    char[l,k][1] = 0.0
+                    char[l,k][2] = 0.0
+
+    return char
+                
+        
+                
+for i in range(0,10):
+    print i,len(image)    
+    image = procent(image,0.05, 0.05)
+    thresh = threshold_otsu(image)
+    bw = closing(image > thresh, square(1))
+    label_image = label(bw)    
+    lig, staand, teller1, teller2= {},{}, 0, 0
+    
+    for region in regionprops(label_image):
+    
+        # skip small images
+        if region.area < (len(image[0,:])/50):
+            continue
+    
+        # draw rectangle around segmented coins
+        minr, minc, maxr, maxc = region.bbox
+        verhouding = ((maxc-minc) / (maxr -float(minr)))
+        #Kijkt of het een liggend of staande rechthoek is. Kenteken is liggend, letters zijn staand.   
+        if (maxr-minr) < (maxc - minc):
+            lig[teller1] = ( abs(4.74 - verhouding),  [int(minr), int(maxr), int(minc), int(maxc)], int((maxr - minr)*(maxc - minc)), int(maxr-minr), int(maxc-minc))
+            teller1 += 1
+        else:
+            staand[teller2] = ( abs(4.74 - verhouding),  [int(minr), int(maxr), int(minc), int(maxc)], int((maxr - minr)*(maxc - minc)), int(maxr-minr), int(maxc-minc))
+            teller2 += 1  
+    
+    
+    letters, cent= Groep(staand)
+    lijn, hoek, afstand =  Lijnzoek(cent)
+    letters, coef =  Lijn(lijn, hoek, afstand, cent, letters)
+    #print len(Lijn[0])
+    if 8 > len(letters) >5:
+        print "WUNDERBAR"
+        coords = []
+        for i in letters:
+            coords.append( staand[i][1])
+        #break
+        #"""    
+        "SHIT VOOR TEKENEN"            
+        den = []
+        breedte = []
+        coords = sorted(cor(coords), key=lambda x: x[2])
+        kenteken = []    
+        for i in range(len(letters)):
+            breedte.append( coords[i][3]-coords[i][2])
+            den.append(denoise_bilateral(image[coords[i][0]:coords[i][1], coords[i][2]:coords[i][3]], 30))
+            den[i]  = rotate(den[i], np.rad2deg(-np.tan(coef)))
+            thresh = threshold_otsu(den[i])
+            bw = closing(den[i] > thresh, square(1))
+            bw = clear_border(np.invert(bw)).astype(float)
+           
+            kenteken.append(bw)
+        char = tesserfix(concatenate(kenteken, sum(breedte)), True)
+        char = cv2.resize(char, (np.shape(char)[1]*2,np.shape(char)[0]*2), interpolation = cv2.INTER_CUBIC)
+                                 
+        #image fixxing for tesseract recognition
+        cv2.imwrite('test1.jpg', char)        
+        #"""
+        fig, ax = plt.subplots(ncols=2, nrows=1, figsize=(6, 6))
+
+        coords= cor(coords)
+        ymin = min(coords, key=lambda x: x[0])[0]
+        ymax = max(coords, key=lambda x: x[1])[1]
+        xmin = min(coords, key=lambda x: x[2])[2]
+        xmax = max(coords, key=lambda x: x[3])[3]
+        bw = rotate(image[ymin:ymax, xmin:xmax], np.rad2deg(-np.tan(coef)))
+
+        bw = denoise_bilateral(bw, 20)
+        thresh = threshold_otsu(bw)
+        bw = np.invert(closing(bw > thresh, square(1)))
+
+        #bw = (bw).astype(int)
+        bw = clear_border(bw).astype(int)
+        bw  = tesserfix((bw), False)
+        r = bw.shape[0]*2
+        dim = (bw.shape[1]*2, r)
+        bwb = cv2.resize(bw, dim, interpolation = cv2.INTER_CUBIC)
+        cv2.imwrite('test.jpg', bwb)        
+
+        ax[0].imshow(bw)
+        ax[1].imshow(bwb)
+        plt.show()
+        #io.imsave('martin.jpg', clear_border(bw.astype(float)))
+        #"""
+        break
+        #"""
+print "DEELS", image_to_string(Image.open('test1.jpg'))        
+print "HEEL", image_to_string(Image.open('test.jpg'))
