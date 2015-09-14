@@ -1,0 +1,119 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from skimage import io
+import math
+import matplotlib.pyplot as plt
+import numpy as np
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import pyplot as plt
+import timeit
+from skimage import data
+from skimage.feature import corner_harris, corner_subpix, corner_peaks
+from skimage.transform import warp, AffineTransform
+from skimage.draw import ellipse
+from skimage import data, color
+from skimage.transform import hough_circle
+from skimage.feature import peak_local_max, canny
+from skimage.draw import circle_perimeter
+from skimage.util import img_as_ubyte
+from skimage.draw import ellipse
+from skimage.measure import label, regionprops
+from skimage.transform import rotate
+import cv2
+from skimage import measure
+from scipy import signal
+from skimage.filters import roberts, sobel, scharr, sobel_v, sobel_h
+from skimage.segmentation import clear_border
+
+
+def horPro(img, kernel):
+    
+    if (len(img[0,:]) and len(img[:,0])) > 0:
+        y = np.zeros(len(img[:,0]))
+        for i in range(len(y)):
+            y[i] = sum(abs(img[i,:]))
+        return signal.medfilt(y, kernel)
+        
+def Maxband(plot):
+    Maxcv =  signal.find_peaks_cwt(plot, np.arange((len(image) / 20),(len(image) / 15)))
+    Mincv = signal.find_peaks_cwt(-plot, np.arange((len(image) / 30),(len(image) / 15)))
+    Maxlijst = {}
+    Minlijst = {}
+    Minlijst[0] = (0,0)
+    teller0 = 0
+    teller1 = 1
+    for i in Maxcv:
+        Maxlijst[teller0] = (i, plot[i])
+        teller0 += 1
+    for k in Mincv:
+        Minlijst[teller1] = (k ,plot[k])
+        teller1 += 1 
+    Minlijst[teller1] = (len(plot), 0)
+    sortdicmax = sorted(Maxlijst.items(), key=lambda x: x[1][1])
+    band = np.zeros((3,2))
+    hulp = np.zeros((3,len(Minlijst)))
+    
+    if len(sortdicmax) > 3:
+        for i in range(3):
+            niks = False
+            y0, y1 = len(plot), len(plot)-1
+            for j in range(len(Minlijst)):
+                hulp[i,j] = abs(sortdicmax[-i-1][1][0] - Minlijst[j][0])
+                if hulp[i,j] < y0:
+                    y0 = hulp[i,j]
+                    y0j = j
+                if y0 < hulp[i,j]< y1:
+                    niks = True
+                    y1 = hulp[i,j]
+                    y1j = j
+            print hulp
+            if niks == False:
+                y1 = hulp[i,(y0j-1)]
+                y1j = y0j
+                y0j = y1j - 1                       
+            band[i,0] = Minlijst[y0j][0]
+            band[i,1] = Minlijst[y1j][0]
+
+    else:
+        for i in range(len(sortdicmax)):
+            niks = False
+            y0, y1 = len(plot), len(plot)-1
+            for j in range(len(Minlijst)):
+                hulp[i,j] = abs(sortdicmax[-i-1][1][0] - Minlijst[j][0])
+                if hulp[i,j] < y0:
+                    y0 = hulp[i,j]
+                    y0j = j
+                if y0 < hulp[i,j]< y1:
+                    niks = True
+                    y1 = hulp[i,j]
+                    y1j = j
+            
+            if niks == False:
+                y1 = hulp[i,(y0j-1)]
+                y1j = y0j
+                y0j = y1j - 1                       
+            band[i,0] = Minlijst[y0j][0]
+            band[i,1] = Minlijst[y1j][0]
+            
+    return band            
+image = io.imread('kentkk.jpg', True)
+image = image[int(len(image[:,0])/20): len(image[:,0])-int(len(image[:,0])/20), int(len(image[0,:])/20):(len(image[0,:])- int(len(image[0,:])/20))]
+    
+scisobel = clear_border(sobel_v(image))
+scihor = horPro((scisobel), 11)
+print Maxband(scihor)
+
+#"""    
+fig, ax = plt.subplots(ncols=2, nrows=2, figsize=(6, 6))
+
+
+
+Maxsci = signal.find_peaks_cwt(scihor, np.arange((len(image) / 20),(len(image) / 15)))
+Minsci = signal.find_peaks_cwt(-scihor, np.arange((len(image) / 20),(len(image) / 15)))
+ax[0][0].imshow(image, interpolation='nearest', cmap=plt.cm.gray)
+ax[1][0].imshow(scisobel)
+ax[1][1].plot(scihor)
+
+plt.show()
+#"""
